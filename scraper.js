@@ -18,78 +18,83 @@ try {
   }
 }
 
-// Scrape a page for desired info, return in an object
-function scrapeTshirtDetails (page, time) {
-  return rp(page)
-    .then($ => {
-      const $shirtSection = $('#content').find('.wrapper');
+// Request catalog page, return an array with links to details pages
+function scrapeCatalogPage () {
+  return new Promise((res,rej) => {
+    console.log('1', 'scrapeCatalogPage  ', 'request page, find links to shirts');
 
-      return {
-        title: $shirtSection.find('img')[0].attribs.alt,
-        price: $shirtSection.find('.price').text(),
-        imageUrl: $shirtSection.find('img')[0].attribs.src,
-        url: page.uri,
-        time: time }
-    })
+    const shirtCatalogPage = {
+      url: 'http://shirts4mike.com/shirts.php',
+      transform: body => cheerio.load(body)
+    };
 
-    .catch(function (err) {
-      handler(err);
+    const shirtPaths = [];
+    rp(shirtCatalogPage)
+      .then($ => $('.products li a'))
+      .then($shirts => {
+        $shirts.each(function () {
+          shirtPaths.push(this.attribs.href);
+        });
+      })
+      .then(() => res(shirtPaths));
+  });
+}
+
+
+
+function getShirtDetails ($shirtContent) {
+}
+
+
+
+async function scrapeDetailsPages (shirtPaths, time) {
+  return new Promise((res,rej) => {
+    console.log('2', 'scrapeDetailsPage', 'request page, find details');
+
+    const detailsForShirts = [];
+
+    shirtPaths.forEach(shirtPath => {
+      const shirtDetailsPage = {
+        url: 'http://shirts4mike.com/' + shirtPath,
+        transform: body => cheerio.load(body)
+      };
+
+      rp(shirtDetailsPage)
+        .then($ => $('#content').find('.wrapper'))
+        .then($shirtContent => {
+          return {
+            title: $shirtContent.find('img')[0].attribs.alt,
+            price: $shirtContent.find('.price').text(),
+            imageUrl: $shirtContent.find('img')[0].attribs.src,
+            url: shirtDetailsPage.url,
+            time: time
+          }
+        })
+        .then(shirtDetails => detailsForShirts.push(shirtDetails));
     });
+
+    setTimeout(function () {
+      if (detailsForShirts.length === shirtPaths.length) res(detailsForShirts);
+      else rej(new Error('whoops'));
+    }, 2000);
+  });
 }
 
-// Request details page for a specific shirt, return important information as an object
-async function getTShirtInfo (tshirtID, time) {
+function formatCSVfile (detailsForShirts, date) {
+  return new Promise((res,rej) => {
+    setTimeout(function () {
+      console.log('3', 'formatCSVfile', 'call other functions, store data in folder');
+      console.log(detailsForShirts);
 
-  const shirtDetailsPage = {
-    uri: 'http://shirts4mike.com/' + tshirtID,
-    transform: body => cheerio.load(body)
-  };
+      const fileName = `data/${date}.csv`;
+      const csv = Papa.unparse(detailsForShirts);
+      fs.writeFile(fileName, csv, err => {
+          if (err) handler(err);
+          else console.log('file saved');
+        });
 
-  const shirtInfo = await scrapeTshirtDetails(shirtDetailsPage, time);
-  console.log(shirtInfo.title);
-
-  return shirtInfo;
-}
-
-// Request catalog page, retrieve objects with info on individual shirts, and return an array containing said objects
-function scrapeTshirtData (time) {
-
-  const shirtCatalogPage = {
-    uri: 'http://shirts4mike.com/shirts.php',
-    transform: body => cheerio.load(body)
-  };
-
-  return rp(shirtCatalogPage)
-    .then($ => {
-
-      const $shirts = $('.products li a');
-      const allShirtsInfo = [];
-
-      $shirts.each(async function () {
-        allShirtsInfo.push(await getTShirtInfo(this.attribs.href, time));
-      });
-
-      return allShirtsInfo;
-
-    })
-    .catch(err => handler(err));
-}
-
-//
-async function createCSVfile () {
-
-  const date = new Date();
-
-  const currentTime = `${date.getHours()}:${date.getMinutes()}:${date.getSeconds()}`;
-  const currentDate = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
-  const fileName = `data/${currentDate}.csv`;
-
-  const tShirtData = await scrapeTshirtData(currentTime);
-  const csv = await Papa.unparse(tShirtData);
-
-  fs.writeFile(fileName, csv, err => {
-    if (err) handler(err);
-    else console.log('file saved');
+      res('csvFile');
+    }, 10);
   });
 }
 
@@ -97,8 +102,20 @@ function handler (err) {
   console.error(err);
 }
 
-createCSVfile();
+const createFile = async () => {
+  try {
 
-// BUG: loads shirts synchronously, making them not appear in csv
-// NOTE: need to create error code for 404
-// NOTE: log errors to scraper-error.log
+    const date = new Date();
+    const currentTime = `${date.getHours()}:${date.getMinutes()}:${date.getSeconds()}`;
+    const currentDate = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+
+    const shirtPaths = await scrapeCatalogPage();
+    const detailsForShirts = await scrapeDetailsPages(shirtPaths, currentTime);
+    const csvFile = await formatCSVfile(detailsForShirts, currentDate);
+
+    // await console.log($, detailsForShirts, csvFile)
+
+  } catch (err) { handler(err) };
+}
+
+createFile();
