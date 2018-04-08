@@ -16,13 +16,13 @@ const dateString = new Date().toISOString();
 const date = dateString.slice(0,10);
 const time = dateString.slice(11,19);
 
-// Create 'data' folder or make a note in console if one already exists or another error arises
+// Check for data directory and create if it doesn't exist
 try {
-  fs.mkdirSync('data');
-  console.log('DATA: data directory created');
+  fs.statSync('data');
+  console.log('DATA DIR: already exists');
 } catch (err) {
-  if (err.code == 'EEXIST') console.error('DATA: data directory already exists');
-  else console.error(err.message);
+  fs.mkdirSync('data');
+  console.log('DATA DIR: created');
 }
 
 /************************************************
@@ -32,22 +32,17 @@ try {
 // Request catalog page, return an array with links to details pages
 function scrapeCatalogPage () {
   return new Promise((resolve, reject) => {
-    console.log('scraping catalog page...');
+    console.log('\nscraping catalog page...');
 
     const catalogPage = createRpOptions(rootURL + 'shirts.php');
-    const shirtPaths = [];
 
     // Get page, then find shirts divs, then store the url ids, then return them as an array
     rp(catalogPage)
-      .then($ => $('.products li a'),
-            err => { throw err })
-      .then($shirts => {
-        $shirts.each(function () {
-          shirtPaths.push(this.attribs.href);
-        });
-      })
-      .then(() => resolve(shirtPaths))
-      .catch(err => handler(err));
+    .then($ => $('.products li a'),
+    err => { throw err })
+    .then($shirts => getShirtPaths($shirts))
+    .then(shirtPaths => resolve(shirtPaths))
+    .catch(err => handle(err));
   });
 }
 
@@ -62,30 +57,22 @@ function scrapeDetailsPages (shirtPaths) {
     shirtPaths.forEach(shirtPath => {
       const detailsPage = createRpOptions(rootURL + shirtPath);
 
-      // Get specific shirt's page, then find content div, then store shirt details, then (when all shirts have been stored) return all as an array of objects
+      // Get specific shirt's page, then find content div, then store shirt details, then (when all shirts have been stored) return as an array of objects
       rp(detailsPage)
         .then($ => $('#content').find('.wrapper'),
               err => { throw err })
-        .then($shirtContent => {
-          return {
-            title: $shirtContent.find('img')[0].attribs.alt,
-            price: $shirtContent.find('.price').text(),
-            imageUrl: $shirtContent.find('img')[0].attribs.src,
-            url: detailsPage.url,
-            time: time
-          }
-        })
+        .then($shirtContent => getShirtDetails($shirtContent, detailsPage.url))
         .then(shirtDetails => {
-          detailsForShirts.push(shirtDetails);
           counter++;
+          detailsForShirts.push(shirtDetails);
           if (counter === shirtPaths.length) resolve(detailsForShirts);
         })
-        .catch(err => handler(err));
+        .catch(err => handle(err));
     });
   });
 }
 
-// Using an array of objects respresenting shirts, create and return a csv file
+// Using an array of objects respresenting details on all shirts, create and return a csv file
 function formatCSVfile (detailsForShirts) {
   return new Promise((resolve,reject) => {
     console.log('saving csv file to data directory...');
@@ -94,12 +81,12 @@ function formatCSVfile (detailsForShirts) {
     const csv = Papa.unparse(detailsForShirts);
     fs.writeFile(fileName, csv, err => {
         if (err) reject(err);
-        else resolve('FILE SAVED');
+        else resolve('\nFILE SAVED');
       });
   });
 }
 
-// Get shirt url ids, then shirt details, finally create a CSV file with the data
+// Get shirt url ids, then shirt details, then create a CSV file with the data
 const createFile = async () => {
   try {
 
@@ -107,7 +94,7 @@ const createFile = async () => {
     const detailsForShirts = await scrapeDetailsPages(shirtPaths);
     console.log(await formatCSVfile(detailsForShirts));
 
-  } catch (err) { handler(err) };
+  } catch (err) { handle(err) };
 }
 
 /************************************************
@@ -122,14 +109,46 @@ function createRpOptions (url) {
   };
 }
 
-// Error handler
-function handler (err) {
-  if (err.error.code === 'ENOENT' || err.error.code === 'ENOTFOUND') {
-    console.error('...\n' +
-                  '404, unable to find URL\n' +
-                  err.message)
-  } else console.error(err.error);
+// Using array of shirt elements, return an array of unique url ids
+function getShirtPaths ($shirts) {
+  const shirtPaths = [];
+  $shirts.each(
+    function () { shirtPaths.push(this.attribs.href) });
+  return shirtPaths;
 }
+
+// Find and store shirt details as an object
+function getShirtDetails ($shirtContent, url) {
+  return {
+    title: $shirtContent.find('img')[0].attribs.alt,
+    price: $shirtContent.find('.price').text(),
+    imageUrl: $shirtContent.find('img')[0].attribs.src,
+    url: url,
+    time: time
+  }
+}
+
+/************************************************
+  ERROR HANDLER
+************************************************/
+
+// Log issues to console and to 'scraper-error.log'; first line checks for connection issues
+function handle (err) {
+  if (err.statusCode !== 404 && err.error.code !== ('ENOENT' && 'ENOTFOUND')) console.error('...\n', err.error);
+  else {
+    console.error('...\n' +
+                  'Unable to connect to URL\n' +
+                  err.message)
+  }
+
+  const message = `${new Date().toISOString()} - ${err}\n\n`;
+
+  fs.appendFile('scraper-error.log', message, err => {
+    if (err) console.error(err);
+    console.log('\nERROR LOGGED');
+  });
+}
+
 
 /************************************************
   BEGIN
