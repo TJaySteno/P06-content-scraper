@@ -6,15 +6,15 @@
 
 // Require dependencies
 const fs = require('fs');
+const got = require('got');
 const cheerio = require('cheerio');
-const rp = require('request-promise');
 const Papa = require('papaparse');
 
 // Store root url, and current date & time
 const rootURL = 'http://shirts4mike.com/';
-const dateString = new Date().toISOString();
-const date = dateString.slice(0,10);
-const time = dateString.slice(11,19);
+const dateAndTime = new Date().toISOString();
+const date = dateAndTime.slice(0,10);
+const time = dateAndTime.slice(11,19);
 
 // Check for data directory and create if it doesn't exist
 try {
@@ -30,69 +30,66 @@ try {
 ************************************************/
 
 // Request catalog page, return an array with links to details pages
-function scrapeCatalogPage () {
-  return new Promise((resolve, reject) => {
-    console.log('\nscraping catalog page...');
+async function scrapeCatalogPage () {
+  try {
+      console.log('\nscraping catalog page...');
 
-    const catalogPage = createRpOptions(rootURL + 'shirts.php');
+      const response = await got(rootURL + 'shirts.php');
 
-    // Get page, then find shirts divs, then store the url ids, then return them as an array
-    rp(catalogPage)
-    .then($ => $('.products li a'),
-    err => { throw err })
-    .then($shirts => getShirtPaths($shirts))
-    .then(shirtPaths => resolve(shirtPaths))
-    .catch(err => handle(err));
-  });
+      const $ = cheerio.load(response.body);
+      const $shirts = $('.products li a');
+      const shirtPaths = [];
+
+      $shirts.each(function () {
+        shirtPaths.push(this.attribs.href) });
+
+      return shirtPaths;
+
+  } catch (err) { throw err };
 }
 
-// Using an array of url ids, return an array of objects containing each shirt's details
-function scrapeDetailsPages (shirtPaths) {
-  return new Promise((resolve,reject) => {
-    console.log('retrieving individual shirt details...');
+// Using an array of shirt urls, return an array of objects containing each shirt's details
+async function scrapeDetailsPages (shirtPaths) {
+  try {
+    console.log('retrieving individual shirt details...\n');
 
     const detailsForShirts = [];
     let counter = 0;
 
-    shirtPaths.forEach(shirtPath => {
-      const detailsPage = createRpOptions(rootURL + shirtPath);
+    for (const shirt of shirtPaths) {
+      const shirtDetails = await scrapeShirtPage(shirt);
+      detailsForShirts.push(shirtDetails);
 
-      // Get specific shirt's page, then find content div, then store shirt details, then (when all shirts have been stored) return as an array of objects
-      rp(detailsPage)
-        .then($ => $('#content').find('.wrapper'),
-              err => { throw err })
-        .then($shirtContent => getShirtDetails($shirtContent, detailsPage.url))
-        .then(shirtDetails => {
-          counter++;
-          detailsForShirts.push(shirtDetails);
-          if (counter === shirtPaths.length) resolve(detailsForShirts);
-        })
-        .catch(err => handle(err));
-    });
-  });
+      console.log(` * ${shirtDetails.Title}`);
+
+      counter++;
+      if (counter === shirtPaths.length) return detailsForShirts;
+    }
+  } catch (err) { throw err }
 }
 
-// Using an array of objects respresenting details on all shirts, create and return a csv file
+// Using an array of objects respresenting details on each shirt, create a csv file
 function formatCSVfile (detailsForShirts) {
-  return new Promise((resolve,reject) => {
-    console.log('saving csv file to data directory...');
+  console.log('\nsaving csv file to data directory...');
 
-    const fileName = `data/${date}.csv`;
-    const csv = Papa.unparse(detailsForShirts);
-    fs.writeFile(fileName, csv, err => {
-        if (err) reject(err);
-        else resolve('\nFILE SAVED');
-      });
-  });
+  const fileName = `data/${date}.csv`;
+  const csv = Papa.unparse(detailsForShirts);
+
+  fs.writeFile(fileName, csv, err => {
+    if (err) throw err });
+
+  return '\nFILE SAVED';
 }
 
-// Get shirt url ids, then shirt details, then create a CSV file with the data
+// Get shirt url ids, then details for all shirts, then create a CSV file with the data
 const createFile = async () => {
   try {
 
     const shirtPaths = await scrapeCatalogPage();
     const detailsForShirts = await scrapeDetailsPages(shirtPaths);
-    console.log(await formatCSVfile(detailsForShirts));
+    const status = formatCSVfile(detailsForShirts);
+
+    console.log(status);
 
   } catch (err) { handle(err) };
 }
@@ -101,15 +98,7 @@ const createFile = async () => {
   HELPER FUNCTIONS
 ************************************************/
 
-// Return instruction options for request-promise
-function createRpOptions (url) {
-  return {
-    url: url,
-    transform: body => cheerio.load(body)
-  };
-}
-
-// Using array of shirt elements, return an array of unique url ids
+// Using an array of shirt elements, return an array of unique url ids
 function getShirtPaths ($shirts) {
   const shirtPaths = [];
   $shirts.each(
@@ -117,14 +106,20 @@ function getShirtPaths ($shirts) {
   return shirtPaths;
 }
 
-// Find and store shirt details as an object
-function getShirtDetails ($shirtContent, url) {
+// Using a shirt's url, find and return that shirt's details as an object
+async function scrapeShirtPage (shirtPath) {
+
+  const shirtURL = rootURL + shirtPath;
+  const response = await got(shirtURL);
+
+  const $ = cheerio.load(response.body);
+  const $shirtContent = $('#content').find('.wrapper');
   return {
-    title: $shirtContent.find('img')[0].attribs.alt,
-    price: $shirtContent.find('.price').text(),
-    imageUrl: $shirtContent.find('img')[0].attribs.src,
-    url: url,
-    time: time
+    Title: $shirtContent.find('img')[0].attribs.alt,
+    Price: $shirtContent.find('.price').text(),
+    ImageURL: $shirtContent.find('img')[0].attribs.src,
+    URL: shirtURL,
+    Time: time
   }
 }
 
@@ -132,21 +127,22 @@ function getShirtDetails ($shirtContent, url) {
   ERROR HANDLER
 ************************************************/
 
-// Log issues to console and to 'scraper-error.log'; first line checks for connection issues
+// Convert errors to human-readable format, then log to the console and 'scraper-error.log'
 function handle (err) {
-  if (err.statusCode !== 404 && err.error.code !== ('ENOENT' && 'ENOTFOUND')) console.error('...\n', err.error);
-  else {
-    console.error('...\n' +
-                  'Unable to connect to URL\n' +
-                  err.message)
-  }
+  let message = `\n[${date}, ${time}] `;
 
-  const message = `${new Date().toISOString()} - ${err}\n\n`;
+  if (err.name === 'RequestError') message += `Bad Request, check connection and root URL (${err.code})\n`
+  else if (err.statusCode >= 400) message += `Unable to locate webpage (${err.statusCode})\n`;
+  else message += `${err.statusMessage} (${err.statusCode})\n`;
+
+  message += `  ${err.stack}\n`;
+
+  console.error(message);
 
   fs.appendFile('scraper-error.log', message, err => {
-    if (err) console.error(err);
-    console.log('\nERROR LOGGED');
-  });
+    if (err) console.error('\nThere was a problem logging the error to scraper-error.log\n', err);
+    else console.log('ERROR LOGGED');
+  })
 }
 
 
