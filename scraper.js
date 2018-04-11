@@ -131,20 +131,19 @@ async function scrapeShirtPage (shirtPath) {
 function handle (err) {
   let message = `\n[${date}, ${time}] `;
 
-  if (err.name === 'RequestError') message += `Bad Request, check connection and root URL (${err.code})\n`
-  else if (err.statusCode >= 400) message += `Unable to locate webpage (${err.statusCode})\n`;
-  else message += `${err.statusMessage} (${err.statusCode})\n`;
+  if (err.statusCode >= 400) message += `Unable to locate webpage (${err.statusCode})\n`;
+  else if (err.statusCode) message += `${err.statusMessage} (${err.statusCode})\n`;
+  else if (err.name) message += `Bad Request, check connection and root URL (${err.code})\n`
 
-  message += `  ${err.stack}\n`;
+  message += `  ${err.stack}\n`
 
   console.error(message);
 
-  fs.appendFile('scraper-error.log', message, err => {
-    if (err) console.error('\nThere was a problem logging the error to scraper-error.log\n', err);
+  fs.appendFile('scraper-error.log', message, appendError => {
+    if (appendError) console.error('\nThere was a problem logging the error to scraper-error.log\n', appendError);
     else console.log('ERROR LOGGED');
   })
 }
-
 
 /************************************************
   BEGIN
